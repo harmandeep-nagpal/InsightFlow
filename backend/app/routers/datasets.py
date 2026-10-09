@@ -1,5 +1,5 @@
 import pandas as pd
-
+from sqlalchemy import MetaData, Table, select
 from fastapi import (
     APIRouter,
     Depends,
@@ -7,7 +7,14 @@ from fastapi import (
     HTTPException,
     UploadFile,
 )
+from app.schemas.query import (
+    QueryRequest,
+    QueryResponse,
+)
 
+from app.services.query_service import (
+    execute_dataset_query,
+)
 from sqlalchemy.orm import Session
 
 from app.database.dependencies import get_db
@@ -112,4 +119,107 @@ async def upload_dataset(
         raise HTTPException(
             status_code=400,
             detail=f"Could not process CSV: {str(e)}",
+        )
+
+@router.get("/{dataset_id}/preview")
+def preview_dataset(
+    dataset_id: int,
+    limit: int = 10,
+    db: Session = Depends(get_db),
+):
+    # Prevent unreasonable requests
+    if limit < 1 or limit > 100:
+        raise HTTPException(
+            status_code=400,
+            detail="Limit must be between 1 and 100.",
+        )
+
+    # Find dataset metadata
+    dataset = (
+        db.query(Dataset)
+        .filter(Dataset.id == dataset_id)
+        .first()
+    )
+
+    if not dataset:
+        raise HTTPException(
+            status_code=404,
+            detail="Dataset not found.",
+        )
+
+    try:
+        # Load the physical dataset table
+        metadata = MetaData()
+
+        table = Table(
+            dataset.table_name,
+            metadata,
+            autoload_with=db.get_bind(),
+        )
+
+        # Query only requested number of rows
+        statement = select(table).limit(limit)
+
+        result = db.execute(statement)
+
+        rows = [
+            dict(row._mapping)
+            for row in result
+        ]
+
+        return {
+            "dataset_id": dataset.id,
+            "table_name": dataset.table_name,
+            "row_count": dataset.row_count,
+            "column_count": dataset.column_count,
+            "columns": dataset.column_names,
+            "rows": rows,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not preview dataset: {str(e)}",
+        )
+
+@router.post(
+    "/{dataset_id}/query",
+    response_model=QueryResponse,
+)
+def query_dataset(
+    dataset_id: int,
+    request: QueryRequest,
+    db: Session = Depends(get_db),
+):
+    dataset = (
+        db.query(Dataset)
+        .filter(Dataset.id == dataset_id)
+        .first()
+    )
+
+    if not dataset:
+        raise HTTPException(
+            status_code=404,
+            detail="Dataset not found.",
+        )
+
+    try:
+        return execute_dataset_query(
+            db=db,
+            sql=request.sql,
+            dataset_id=dataset.id,
+            table_name=dataset.table_name,
+            limit=request.limit,
+        )
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=str(e),
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Query execution failed: {str(e)}",
         )
