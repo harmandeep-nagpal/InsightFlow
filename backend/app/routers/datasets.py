@@ -1,5 +1,14 @@
+import re
+
 import pandas as pd
-from sqlalchemy import MetaData, Table, select
+
+from sqlalchemy import (
+    MetaData,
+    Table,
+    inspect,
+    select,
+)
+
 from fastapi import (
     APIRouter,
     Depends,
@@ -222,4 +231,109 @@ def query_dataset(
         raise HTTPException(
             status_code=500,
             detail=f"Query execution failed: {str(e)}",
+        )
+
+@router.get("/{dataset_id}/schema")
+def get_dataset_schema(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+):
+    # 1. Retrieve dataset metadata.
+    dataset = (
+        db.query(Dataset)
+        .filter(Dataset.id == dataset_id)
+        .first()
+    )
+
+    if not dataset:
+        raise HTTPException(
+            status_code=404,
+            detail="Dataset not found.",
+        )
+
+    # 2. Validate the internally stored table name.
+    # Dataset tables are generated as dataset_<dataset_id>.
+    expected_table_name = f"dataset_{dataset.id}"
+
+    if dataset.table_name != expected_table_name:
+        raise HTTPException(
+            status_code=500,
+            detail="Dataset table reference is invalid.",
+        )
+
+    if not re.fullmatch(
+        r"dataset_[1-9][0-9]*",
+        dataset.table_name,
+    ):
+        raise HTTPException(
+            status_code=500,
+            detail="Dataset table reference is invalid.",
+        )
+
+    try:
+        # 3. Inspect the actual PostgreSQL table.
+        inspector = inspect(db.get_bind())
+
+        if not inspector.has_table(
+            dataset.table_name
+        ):
+            raise HTTPException(
+                status_code=500,
+                detail="Dataset storage table does not exist.",
+            )
+
+        column_metadata = inspector.get_columns(
+            dataset.table_name
+        )
+
+        # 4. Retrieve primary-key information.
+        primary_key_info = inspector.get_pk_constraint(
+            dataset.table_name
+        )
+
+        primary_key_columns = set(
+            primary_key_info.get(
+                "constrained_columns"
+            ) or []
+        )
+
+        # 5. Build structured column information.
+        columns = []
+
+        for column in column_metadata:
+            column_name = column["name"]
+
+            columns.append(
+                {
+                    "name": column_name,
+                    "data_type": str(
+                        column["type"]
+                    ),
+                    "nullable": column["nullable"],
+                    "primary_key": (
+                        column_name
+                        in primary_key_columns
+                    ),
+                }
+            )
+
+        # 6. Return dataset metadata and actual schema.
+        return {
+            "dataset_id": dataset.id,
+            "dataset_name": dataset.name,
+            "filename": dataset.filename,
+            "table_name": dataset.table_name,
+            "row_count": dataset.row_count,
+            "column_count": len(columns),
+            "columns": columns,
+            "created_at": dataset.created_at,
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="Could not retrieve dataset schema.",
         )
