@@ -1,5 +1,5 @@
 import re
-
+from app.services.profiling_service import profile_dataset
 import pandas as pd
 
 from sqlalchemy import (
@@ -336,4 +336,42 @@ def get_dataset_schema(
         raise HTTPException(
             status_code=500,
             detail="Could not retrieve dataset schema.",
+        )
+
+
+@router.get("/{dataset_id}/profile")
+def get_dataset_profile(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+):
+    # 1. Find the dataset metadata.
+    dataset = (
+        db.query(Dataset)
+        .filter(Dataset.id == dataset_id)
+        .first()
+    )
+
+    if not dataset:
+        raise HTTPException(
+            status_code=404,
+            detail="Dataset not found.",
+        )
+
+    try:
+        # 2. Calculate dataset profiling statistics.
+        return profile_dataset(
+            db=db,
+            dataset=dataset,
+        )
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=str(e),
+        )
+
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="Could not profile dataset.",
         )
