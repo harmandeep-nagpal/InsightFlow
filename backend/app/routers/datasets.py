@@ -1,7 +1,16 @@
 import re
 from app.services.profiling_service import profile_dataset
 import pandas as pd
+from app.schemas.analytics import AnalyticsQuestionRequest
 
+from app.services.context_builder import build_dataset_context
+
+from app.services.prompt_service import build_sql_generation_messages
+
+from app.services.llm_service import (
+    generate_sql_response,
+    LLMServiceError,
+)
 from sqlalchemy import (
     MetaData,
     Table,
@@ -375,3 +384,110 @@ def get_dataset_profile(
             status_code=500,
             detail="Could not profile dataset.",
         )
+
+@router.post("/{dataset_id}/ask")
+async def ask_dataset_question(
+    dataset_id: int,
+    request: AnalyticsQuestionRequest,
+    db: Session = Depends(get_db),
+):
+    # 1. Retrieve the selected dataset.
+    dataset = (
+        db.query(Dataset)
+        .filter(Dataset.id == dataset_id)
+        .first()
+    )
+
+    if not dataset:
+        raise HTTPException(
+            status_code=404,
+            detail="Dataset not found.",
+        )
+
+    # 2. Build context from the selected dataset.
+    try:
+        dataset_context = build_dataset_context(
+            db=db,
+            dataset=dataset,
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Could not build dataset context.",
+        ) from exc
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Could not build dataset context.",
+        ) from exc
+
+    # 3. Construct the messages for the LLM.
+    try:
+        messages = build_sql_generation_messages(
+            question=request.question,
+            dataset_context=dataset_context,
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    # 4. Ask the local LLM to generate a response.
+    try:
+        llm_result = await generate_sql_response(messages)
+
+    except LLMServiceError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="The local LLM could not generate a valid response.",
+        ) from exc
+
+    # 5. Return a clear response when the question
+    # cannot be answered from the available dataset.
+    if not llm_result["can_answer"]:
+        return {
+            "dataset_id": dataset.id,
+            "question": request.question,
+            "can_answer": False,
+            "explanation": llm_result["explanation"],
+            "sql": None,
+            "results": None,
+        }
+
+    # 6. Validate and execute the generated SQL using
+    # the existing query service.
+    try:
+        query_results = execute_dataset_query(
+            db=db,
+            sql=llm_result["sql"],
+            dataset_id=dataset.id,
+            table_name=dataset.table_name,
+            limit=request.limit,
+        )
+
+    except ValueError as exc:
+        # The model-generated SQL failed validation.
+        raise HTTPException(
+            status_code=502,
+            detail="The generated SQL was rejected by the SQL validator.",
+        ) from exc
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="The generated query could not be executed.",
+        ) from exc
+
+    # 7. Return the explanation and actual query results.
+    return {
+        "dataset_id": dataset.id,
+        "question": request.question,
+        "can_answer": True,
+        "explanation": llm_result["explanation"],
+        "sql": llm_result["sql"],
+        "results": query_results,
+    }

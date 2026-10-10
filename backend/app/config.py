@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     environment: str = "development"
     database_url: str
 
+    # Local LLM configuration
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen2.5:3b-instruct"
+
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
         env_file_encoding="utf-8",
