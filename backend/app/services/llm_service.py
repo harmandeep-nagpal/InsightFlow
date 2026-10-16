@@ -17,6 +17,7 @@ def _validate_llm_output(content: str) -> dict:
     It does not establish that the generated SQL is safe.
     """
 
+    # Parse the model's JSON response.
     try:
         result = json.loads(content)
     except json.JSONDecodeError as exc:
@@ -24,11 +25,26 @@ def _validate_llm_output(content: str) -> dict:
             "The model returned invalid JSON."
         ) from exc
 
+    # Validate the top-level response structure first.
     if not isinstance(result, dict):
         raise LLMServiceError(
             "The model response must be a JSON object."
         )
 
+    # Validate the explanation field.
+    if not isinstance(result.get("explanation"), str):
+        raise LLMServiceError(
+            "'explanation' must be a string."
+        )
+
+    explanation = result["explanation"].strip()
+
+    if not explanation:
+        raise LLMServiceError(
+            "'explanation' cannot be empty."
+        )
+
+    # Ensure the response contains exactly the required fields.
     required_fields = {
         "can_answer",
         "sql",
@@ -40,18 +56,15 @@ def _validate_llm_output(content: str) -> dict:
             "The model response contains missing or unexpected fields."
         )
 
+    # Validate whether the question can be answered.
     if not isinstance(result["can_answer"], bool):
         raise LLMServiceError(
             "'can_answer' must be a boolean."
         )
 
-    if not isinstance(result["explanation"], str):
-        raise LLMServiceError(
-            "'explanation' must be a string."
-        )
-
     sql = result["sql"]
 
+    # Validate the SQL field based on can_answer.
     if result["can_answer"]:
         if not isinstance(sql, str) or not sql.strip():
             raise LLMServiceError(
@@ -65,7 +78,7 @@ def _validate_llm_output(content: str) -> dict:
     return {
         "can_answer": result["can_answer"],
         "sql": sql.strip() if isinstance(sql, str) else None,
-        "explanation": result["explanation"],
+        "explanation": explanation,
     }
 
 
@@ -81,6 +94,7 @@ async def generate_sql_response(messages: list[dict]) -> dict:
     This function does not execute SQL.
     """
 
+    # Validate the input messages.
     if not isinstance(messages, list) or not messages:
         raise ValueError(
             "Messages must be a non-empty list."
@@ -108,6 +122,7 @@ async def generate_sql_response(messages: list[dict]) -> dict:
         },
     }
 
+    # Communicate with the local Ollama API.
     try:
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(120.0)
@@ -135,6 +150,12 @@ async def generate_sql_response(messages: list[dict]) -> dict:
             f"Ollama returned HTTP {exc.response.status_code}."
         ) from exc
 
+    except httpx.RequestError as exc:
+        raise LLMServiceError(
+            "A network error occurred while communicating with Ollama."
+        ) from exc
+
+    # Extract the model's response content.
     try:
         response_data = response.json()
         content = response_data["message"]["content"]
@@ -149,4 +170,5 @@ async def generate_sql_response(messages: list[dict]) -> dict:
             "Ollama returned non-text message content."
         )
 
+    # Validate the model output before returning it.
     return _validate_llm_output(content)
