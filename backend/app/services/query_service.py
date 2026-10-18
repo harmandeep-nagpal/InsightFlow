@@ -51,6 +51,7 @@ FORBIDDEN_FUNCTIONS = {
 }
 
 
+
 def validate_sql(
     sql: str,
     expected_table: str,
@@ -61,7 +62,6 @@ def validate_sql(
     Only SELECT queries that reference the expected dataset table
     are accepted.
     """
-
     if not isinstance(sql, str):
         raise ValueError("SQL query must be a string.")
 
@@ -85,6 +85,7 @@ def validate_sql(
             "SQL comments are not allowed."
         )
 
+    # Parse SQL using the PostgreSQL dialect.
     try:
         parsed = sqlglot.parse(
             sql,
@@ -116,17 +117,29 @@ def validate_sql(
                 "Only read-only SELECT queries are allowed."
             )
 
-    # Reject CTEs for now. This keeps table-reference validation
-    # straightforward and avoids ambiguous CTE/table-name handling.
+    # Reject CTEs to keep table-reference validation straightforward.
     if expression.find(exp.With):
         raise ValueError(
             "Common table expressions (WITH) are not allowed."
+        )
+
+    # Reject SELECT INTO because it can create a table.
+    if expression.find(exp.Into):
+        raise ValueError(
+            "SELECT INTO is not allowed."
+        )
+
+    # Reject row-locking queries such as SELECT ... FOR UPDATE.
+    if expression.args.get("locks"):
+        raise ValueError(
+            "Row-locking queries are not allowed."
         )
 
     # Reject functions that are inappropriate for analytics queries.
     for function in expression.find_all(exp.Func):
         function_name = function.sql_name().upper()
 
+        # Handle functions represented as anonymous SQL functions.
         if function_name == "ANONYMOUS":
             function_name = getattr(
                 function,
@@ -134,34 +147,36 @@ def validate_sql(
                 "",
             ).upper()
 
+        # Normalize the function name before checking the denylist.
+        function_name = function_name.rsplit(".", 1)[-1]
+        function_name = function_name.strip('"').upper()
+
         if function_name in FORBIDDEN_FUNCTIONS:
             raise ValueError(
                 f"Function '{function_name}' is not allowed."
             )
 
-    # Find every table reference, including references in subqueries.
-    tables = list(
-        expression.find_all(exp.Table)
-    )
+    # Validate every table reference against the expected dataset.
+    tables = list(expression.find_all(exp.Table))
 
     if not tables:
         raise ValueError(
-            "Query must reference the selected dataset."
+            "Query must reference the expected dataset table."
         )
 
     for table in tables:
-        # Reject references such as public.dataset_2 or
-        # another_database.public.dataset_2.
+        # Reject schema-qualified or catalog-qualified tables.
         if table.db or table.catalog:
             raise ValueError(
-                "Schema-qualified and database-qualified "
-                "table references are not allowed."
+                "Schema-qualified tables are not allowed."
             )
 
         if table.name != expected_table:
             raise ValueError(
-                f"Query can only access table '{expected_table}'."
+                "Query references an unexpected table."
             )
+
+
 
 
 def execute_dataset_query(

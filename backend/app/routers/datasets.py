@@ -44,7 +44,8 @@ from app.services.dataset_service import (
     insert_dataset_rows,
     prepare_dataset,
 )
-
+import logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/datasets",
@@ -131,13 +132,17 @@ async def upload_dataset(
             detail=str(e),
         )
 
-    except Exception as e:
+    except Exception:
         db.rollback()
 
-        raise HTTPException(
-            status_code=400,
-            detail=f"Could not process CSV: {str(e)}",
-        )
+    logger.exception(
+        "Unexpected error while uploading dataset."
+    )
+
+    raise HTTPException(
+        status_code=500,
+        detail="Could not process CSV upload.",
+    )
 
 @router.get("/{dataset_id}/preview")
 def preview_dataset(
@@ -194,11 +199,18 @@ def preview_dataset(
             "rows": rows,
         }
 
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Could not preview dataset: {str(e)}",
-        )
+    except Exception:
+        db.rollback()
+
+    logger.exception(
+        "Unexpected error while previewing dataset %s.",
+        dataset_id,
+    )
+
+    raise HTTPException(
+        status_code=500,
+        detail="Could not preview dataset.",
+    )
 
 @router.post(
     "/{dataset_id}/query",
@@ -236,11 +248,16 @@ def query_dataset(
             detail=str(e),
         )
 
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Query execution failed: {str(e)}",
+    except Exception:
+        logger.exception(
+            "Unexpected query execution error for dataset %s.",
+            dataset_id,
         )
+
+    raise HTTPException(
+        status_code=500,
+        detail="Query execution failed.",
+    )
 
 @router.get("/{dataset_id}/schema")
 def get_dataset_schema(
