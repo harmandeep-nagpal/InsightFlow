@@ -47,41 +47,50 @@ def test_valid_analytics_queries_are_accepted(sql):
 # -----------------------------
 
 @pytest.mark.parametrize(
-"sql",
-[
-# Database modification
-"DELETE FROM dataset_1",
+    "sql",
+    [
+        # Database modification
+        "DELETE FROM dataset_1",
 
-    # UNION is not accepted by the current SELECT-only policy
-    "SELECT * FROM dataset_1 UNION SELECT * FROM dataset_1",
+        # UNION is rejected by the current SELECT-only policy
+        "SELECT * FROM dataset_1 UNION SELECT * FROM dataset_1",
 
-    # Unexpected table
-    "SELECT * FROM dataset_2",
+        # Unexpected table
+        "SELECT * FROM dataset_2",
 
-    # Schema-qualified table
-    "SELECT * FROM public.dataset_1",
+        # Schema-qualified table
+        "SELECT * FROM public.dataset_1",
 
-    # No dataset reference
-    "SELECT 1",
+        # No dataset reference
+        "SELECT 1",
 
-    # Dangerous PostgreSQL function
-    "SELECT pg_sleep(1) FROM dataset_1",
+        # Dangerous PostgreSQL function
+        "SELECT pg_sleep(1) FROM dataset_1",
 
-    # CTE
-    "WITH temp AS (SELECT * FROM dataset_1) SELECT * FROM temp",
+        # Dangerous PostgreSQL function with explicit schema
+        "SELECT pg_catalog.pg_sleep(1) FROM dataset_1",
 
-    # Multiple statements
-    "SELECT * FROM dataset_1; SELECT * FROM dataset_1",
+        # CTE
+        "WITH temp AS (SELECT * FROM dataset_1) SELECT * FROM temp",
 
-    # SQL comments
-    "SELECT * FROM dataset_1 -- comment",
+        # Multiple statements
+        "SELECT * FROM dataset_1; SELECT * FROM dataset_1",
 
-    # Invalid syntax
-    "SELECT FROM WHERE",
-],
+        # SQL comments
+        "SELECT * FROM dataset_1 -- comment",
 
+        # Invalid syntax
+        "SELECT FROM WHERE",
 
+        # SELECT INTO must not create a new table
+        "SELECT revenue INTO dataset_copy FROM dataset_1",
+
+        # Row locking must not be allowed
+        "SELECT * FROM dataset_1 FOR UPDATE",
+    ],
 )
+
+
 def test_unsafe_queries_are_rejected(sql):
     with pytest.raises(ValueError):
         validate_sql(sql, expected_table="dataset_1")

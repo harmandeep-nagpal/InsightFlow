@@ -172,3 +172,145 @@ async def generate_sql_response(messages: list[dict]) -> dict:
 
     # Validate the model output before returning it.
     return _validate_llm_output(content)
+
+def _validate_insight_output(content: str) -> dict:
+    """
+    Parse and validate the JSON returned by the insight generator.
+    """
+
+    try:
+        result = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise LLMServiceError(
+            "The model returned invalid insight JSON."
+        ) from exc
+
+    if not isinstance(result, dict):
+        raise LLMServiceError(
+            "The insight response must be a JSON object."
+        )
+
+    if set(result.keys()) != {"insights"}:
+        raise LLMServiceError(
+            "The insight response contains missing or unexpected fields."
+        )
+
+    insights = result["insights"]
+
+    if not isinstance(insights, list):
+        raise LLMServiceError(
+            "'insights' must be a list."
+        )
+
+    if len(insights) > 5:
+        raise LLMServiceError(
+            "The model returned too many insights."
+        )
+
+    validated_insights = []
+
+    for insight in insights:
+        if not isinstance(insight, str):
+            raise LLMServiceError(
+                "Each insight must be a string."
+            )
+
+        normalized_insight = insight.strip()
+
+        if not normalized_insight:
+            raise LLMServiceError(
+                "Insights cannot contain empty strings."
+            )
+
+        if len(normalized_insight) > 1000:
+            raise LLMServiceError(
+                "An insight exceeds the maximum length."
+            )
+
+        validated_insights.append(normalized_insight)
+
+    return {"insights": validated_insights}
+
+
+async def generate_business_insights(
+    messages: list[dict],
+) -> dict:
+    """
+    Ask the local Ollama model to analyze query results.
+
+    This function does not execute SQL.
+    """
+
+    if not isinstance(messages, list) or not messages:
+        raise ValueError(
+            "Messages must be a non-empty list."
+        )
+
+    for message in messages:
+        if (
+            not isinstance(message, dict)
+            or not isinstance(message.get("role"), str)
+            or not isinstance(message.get("content"), str)
+        ):
+            raise ValueError(
+                "Each message must contain string role and content fields."
+            )
+
+    url = f"{settings.ollama_base_url.rstrip('/')}/api/chat"
+
+    payload = {
+        "model": settings.ollama_model,
+        "messages": messages,
+        "stream": False,
+        "format": "json",
+        "options": {
+            "temperature": 0,
+        },
+    }
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(120.0)
+        ) as client:
+            response = await client.post(
+                url,
+                json=payload,
+            )
+            response.raise_for_status()
+
+    except httpx.ConnectError as exc:
+        raise LLMServiceError(
+            "Cannot connect to Ollama. Ensure Ollama is running "
+            "and its local API is accessible."
+        ) from exc
+
+    except httpx.TimeoutException as exc:
+        raise LLMServiceError(
+            "The local LLM request timed out."
+        ) from exc
+
+    except httpx.HTTPStatusError as exc:
+        raise LLMServiceError(
+            f"Ollama returned HTTP {exc.response.status_code}."
+        ) from exc
+
+    except httpx.RequestError as exc:
+        raise LLMServiceError(
+            "A network error occurred while communicating with Ollama."
+        ) from exc
+
+    try:
+        response_data = response.json()
+        content = response_data["message"]["content"]
+
+    except (ValueError, KeyError, TypeError) as exc:
+        raise LLMServiceError(
+            "Ollama returned an unexpected response format."
+        ) from exc
+
+    if not isinstance(content, str):
+        raise LLMServiceError(
+            "Ollama returned non-text message content."
+        )
+
+    return _validate_insight_output(content)

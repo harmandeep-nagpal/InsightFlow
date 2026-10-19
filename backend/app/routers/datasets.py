@@ -5,10 +5,13 @@ from app.schemas.analytics import AnalyticsQuestionRequest
 
 from app.services.context_builder import build_dataset_context
 
-from app.services.prompt_service import build_sql_generation_messages
-
+from app.services.prompt_service import (
+    build_sql_generation_messages,
+    build_insight_generation_messages,
+)
 from app.services.llm_service import (
     generate_sql_response,
+    generate_business_insights,
     LLMServiceError,
 )
 from sqlalchemy import (
@@ -499,7 +502,40 @@ async def ask_dataset_question(
             detail="The generated query could not be executed.",
         ) from exc
 
-    # 7. Return the explanation and actual query results.
+        # 7. Generate insights from the actual query results.
+    insights = []
+
+    result_rows = query_results.get("rows", [])
+
+    if result_rows:
+        try:
+            insight_messages = build_insight_generation_messages(
+                question=request.question,
+                query_results=query_results,
+            )
+
+            insight_response = await generate_business_insights(
+                insight_messages
+            )
+
+            insights = insight_response["insights"]
+
+        except (LLMServiceError, ValueError):
+            # Preserve successfully executed query results if
+            # the optional insight-generation step fails.
+            logger.warning(
+                "Business insight generation failed for dataset %s.",
+                dataset.id,
+            )
+
+        except Exception:
+            # Unexpected failures must not discard query results.
+            logger.exception(
+                "Unexpected business insight error for dataset %s.",
+                dataset.id,
+            )
+
+    # 8. Return the SQL explanation, results, and insights.
     return {
         "dataset_id": dataset.id,
         "question": request.question,
@@ -507,4 +543,5 @@ async def ask_dataset_question(
         "explanation": llm_result["explanation"],
         "sql": llm_result["sql"],
         "results": query_results,
+        "insights": insights,
     }
