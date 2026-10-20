@@ -2,7 +2,7 @@ import re
 from app.services.profiling_service import profile_dataset
 import pandas as pd
 from app.schemas.analytics import AnalyticsQuestionRequest
-
+from app.models.query_history import QueryHistory
 from app.services.context_builder import build_dataset_context
 
 from app.services.prompt_service import (
@@ -49,6 +49,77 @@ from app.services.dataset_service import (
 )
 import logging
 logger = logging.getLogger(__name__)
+
+
+def _start_query_history(
+    db: Session,
+    dataset_id: int,
+    question: str,
+) -> QueryHistory | None:
+    """
+    Create a pending history record.
+
+    History failures must not prevent analytics requests
+    from proceeding.
+    """
+    history = QueryHistory(
+        dataset_id=dataset_id,
+        question=question,
+        status="pending",
+        insights=[],
+    )
+
+    try:
+        db.add(history)
+        db.commit()
+        return history
+
+    except Exception:
+        db.rollback()
+
+        logger.exception(
+            "Could not create query history for dataset %s.",
+            dataset_id,
+        )
+
+        return None
+
+
+def _finish_query_history(
+    db: Session,
+    history: QueryHistory | None,
+    *,
+    status: str,
+    generated_sql: str | None = None,
+    explanation: str | None = None,
+    insights: list[str] | None = None,
+    error_message: str | None = None,
+) -> None:
+    """
+    Persist the final outcome without allowing history
+    failures to replace the analytics response.
+    """
+    if history is None:
+        return
+
+    history_dataset_id = history.dataset_id
+
+    try:
+        history.status = status
+        history.generated_sql = generated_sql
+        history.explanation = explanation
+        history.insights = insights if insights is not None else []
+        history.error_message = error_message
+        db.commit()
+
+    except Exception:
+        db.rollback()
+
+        logger.exception(
+            "Could not finalize query history record for dataset %s.",
+            history_dataset_id,
+        )
+
 
 router = APIRouter(
     prefix="/datasets",
@@ -424,6 +495,14 @@ async def ask_dataset_question(
             detail="Dataset not found.",
         )
 
+    # Create a pending history record. If persistence fails,
+    # analytics processing continues without a history record.
+    history = _start_query_history(
+        db=db,
+        dataset_id=dataset.id,
+        question=request.question,
+    )
+
     # 2. Build context from the selected dataset.
     try:
         dataset_context = build_dataset_context(
@@ -432,12 +511,24 @@ async def ask_dataset_question(
         )
 
     except ValueError as exc:
+        _finish_query_history(
+            db,
+            history,
+            status="failed",
+            error_message="Dataset context generation failed.",
+        )
         raise HTTPException(
             status_code=500,
             detail="Could not build dataset context.",
         ) from exc
 
     except Exception as exc:
+        _finish_query_history(
+            db,
+            history,
+            status="failed",
+            error_message="Dataset context generation failed.",
+        )
         raise HTTPException(
             status_code=500,
             detail="Could not build dataset context.",
@@ -451,6 +542,12 @@ async def ask_dataset_question(
         )
 
     except ValueError as exc:
+        _finish_query_history(
+            db,
+            history,
+            status="failed",
+            error_message="Question could not be prepared.",
+        )
         raise HTTPException(
             status_code=400,
             detail=str(exc),
@@ -461,14 +558,26 @@ async def ask_dataset_question(
         llm_result = await generate_sql_response(messages)
 
     except LLMServiceError as exc:
+        _finish_query_history(
+            db,
+            history,
+            status="failed",
+            error_message="SQL generation failed.",
+        )
         raise HTTPException(
             status_code=502,
             detail="The local LLM could not generate a valid response.",
         ) from exc
 
-    # 5. Return a clear response when the question
-    # cannot be answered from the available dataset.
+    # 5. Record questions that cannot be answered from the dataset.
     if not llm_result["can_answer"]:
+        _finish_query_history(
+            db,
+            history,
+            status="cannot_answer",
+            explanation=llm_result["explanation"],
+        )
+
         return {
             "dataset_id": dataset.id,
             "question": request.question,
@@ -490,21 +599,35 @@ async def ask_dataset_question(
         )
 
     except ValueError as exc:
-        # The model-generated SQL failed validation.
+        _finish_query_history(
+            db,
+            history,
+            status="failed",
+            generated_sql=llm_result["sql"],
+            explanation=llm_result["explanation"],
+            error_message="Generated SQL was rejected by validation.",
+        )
         raise HTTPException(
             status_code=502,
             detail="The generated SQL was rejected by the SQL validator.",
         ) from exc
 
     except Exception as exc:
+        _finish_query_history(
+            db,
+            history,
+            status="failed",
+            generated_sql=llm_result["sql"],
+            explanation=llm_result["explanation"],
+            error_message="Generated query execution failed.",
+        )
         raise HTTPException(
             status_code=500,
             detail="The generated query could not be executed.",
         ) from exc
 
-        # 7. Generate insights from the actual query results.
+    # 7. Generate insights from the actual query results.
     insights = []
-
     result_rows = query_results.get("rows", [])
 
     if result_rows:
@@ -535,7 +658,18 @@ async def ask_dataset_question(
                 dataset.id,
             )
 
-    # 8. Return the SQL explanation, results, and insights.
+    # 8. Persist the successful outcome. History failures must not
+    # prevent the already-computed analytics response from returning.
+    _finish_query_history(
+        db,
+        history,
+        status="success",
+        generated_sql=llm_result["sql"],
+        explanation=llm_result["explanation"],
+        insights=insights,
+    )
+
+    # 9. Return the SQL explanation, results, and insights.
     return {
         "dataset_id": dataset.id,
         "question": request.question,
