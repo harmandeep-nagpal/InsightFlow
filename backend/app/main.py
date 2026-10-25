@@ -6,6 +6,7 @@ from app.config import settings
 from app.database.connection import engine
 from app.database.dependencies import get_db
 from app.routers.history import router as history_router
+from app.routers.auth import router as auth_router
 
 app = FastAPI(
     title=settings.app_name,
@@ -14,7 +15,9 @@ app = FastAPI(
 )
 app.include_router(datasets_router)
 app.include_router(history_router)
-
+app.include_router(auth_router)
+app.include_router(datasets_router)
+app.include_router(history_router)
 @app.get("/health")
 def health_check():
     return {

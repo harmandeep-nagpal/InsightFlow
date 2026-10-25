@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5:3b-instruct"
 
+    # Authentication configuration
+    jwt_secret_key: str = (
+        "development-only-change-this-secret-before-deployment"
+    )
+    jwt_access_token_expire_minutes: int = 30
+
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
         env_file_encoding="utf-8",
