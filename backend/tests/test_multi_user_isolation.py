@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
-
+from unittest.mock import AsyncMock
 from app.main import app
 from app.database.base import Base
 from app.database.dependencies import get_db
@@ -375,3 +375,144 @@ def test_multi_user_dataset_isolation(client):
     )
 
     assert other_user_history_response.status_code == 404
+
+def test_owner_can_successfully_ask_ai_question(client, monkeypatch):
+
+    # ----------------------------------------------
+    # 1. Register and authenticate user
+    # ----------------------------------------------
+
+    email = "ai_query_test@example.com"
+    password = "StrongTestPassword123!"
+
+    register_user(client, email, password)
+
+    headers = login_user(client, email, password)
+
+    # ----------------------------------------------
+    # 2. Upload dataset
+    # ----------------------------------------------
+
+    csv_content = (
+        "product,region,revenue\n"
+        "Laptop,North,50000\n"
+        "Phone,South,30000\n"
+        "Tablet,East,20000\n"
+    )
+
+    upload_response = client.post(
+        "/datasets/upload",
+        headers=headers,
+        files={
+            "file": (
+                "ai_sales.csv",
+                csv_content,
+                "text/csv",
+            )
+        },
+    )
+
+    assert upload_response.status_code == 200, upload_response.text
+
+    dataset_id = upload_response.json()["dataset_id"]
+
+    # ----------------------------------------------
+    # 3. Mock SQL generation
+    # ----------------------------------------------
+
+    generated_sql = (
+        f"SELECT SUM(revenue) AS total_revenue "
+        f"FROM dataset_{dataset_id}"
+    )
+
+    mock_sql_generation = AsyncMock(
+        return_value={
+            "can_answer": True,
+            "sql": generated_sql,
+            "explanation": "Calculates total revenue.",
+        }
+    )
+
+    monkeypatch.setattr(
+        "app.routers.datasets.generate_sql_response",
+        mock_sql_generation,
+    )
+
+    # ----------------------------------------------
+    # 4. Mock business insight generation
+    # ----------------------------------------------
+
+    mock_insight_generation = AsyncMock(
+        return_value={
+            "insights": [
+                "Total revenue across all products is 100000."
+            ]
+        }
+    )
+
+    monkeypatch.setattr(
+        "app.routers.datasets.generate_business_insights",
+        mock_insight_generation,
+    )
+
+    # ----------------------------------------------
+    # 5. Ask an AI question
+    # ----------------------------------------------
+
+    ask_response = client.post(
+        f"/datasets/{dataset_id}/ask",
+        headers=headers,
+        json={
+            "question": "What is the total revenue?",
+            "limit": 10,
+        },
+    )
+
+    assert ask_response.status_code == 200, ask_response.text
+
+    response_data = ask_response.json()
+
+    # ----------------------------------------------
+    # 6. Verify API response
+    # ----------------------------------------------
+
+    assert response_data["dataset_id"] == dataset_id
+
+    assert response_data["can_answer"] is True
+
+    assert response_data["question"] == "What is the total revenue?"
+
+    assert response_data["sql"] == generated_sql
+
+    assert response_data["results"]["rows"][0]["total_revenue"] == 100000
+
+    assert response_data["insights"] == [
+        "Total revenue across all products is 100000."
+    ]
+
+    # ----------------------------------------------
+    # 7. Verify LLM calls
+    # ----------------------------------------------
+
+    mock_sql_generation.assert_awaited_once()
+
+    mock_insight_generation.assert_awaited_once()
+
+    # ----------------------------------------------
+    # 8. Verify query history persistence
+    # ----------------------------------------------
+
+    db = TestingSessionLocal()
+
+    try:
+        history = (
+            db.query(QueryHistory)
+            .filter(QueryHistory.dataset_id == dataset_id)
+            .first()
+        )
+
+        assert history is not None
+        assert history.status == "success"
+
+    finally:
+        db.close()
