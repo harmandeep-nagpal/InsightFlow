@@ -1,4 +1,4 @@
-
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,6 +13,8 @@ from app.schemas.query import QueryRequest
 from app.models.dataset import Dataset
 from app.services.llm_service import LLMServiceError
 
+
+TEST_USER = SimpleNamespace(id=1)
 
 
 def test_query_endpoint_does_not_expose_internal_errors():
@@ -39,11 +41,13 @@ def test_query_endpoint_does_not_expose_internal_errors():
                 dataset_id=1,
                 request=request,
                 db=db,
+                current_user=TEST_USER,
             )
 
     assert exc_info.value.status_code == 500
     assert exc_info.value.detail == "Query execution failed."
     assert "Sensitive database connection details" not in exc_info.value.detail
+
 
 def make_analytics_request():
     return AnalyticsQuestionRequest(
@@ -74,6 +78,7 @@ async def test_ask_endpoint_returns_404_for_missing_dataset():
             dataset_id=999,
             request=make_analytics_request(),
             db=db,
+            current_user=TEST_USER,
         )
 
     assert exc_info.value.status_code == 404
@@ -104,6 +109,7 @@ async def test_ask_endpoint_returns_502_when_llm_fails():
                 dataset_id=1,
                 request=make_analytics_request(),
                 db=db,
+                current_user=TEST_USER,
             )
 
     assert exc_info.value.status_code == 502
@@ -140,6 +146,7 @@ async def test_ask_endpoint_does_not_execute_sql_when_unanswerable():
             dataset_id=1,
             request=make_analytics_request(),
             db=db,
+            current_user=TEST_USER,
         )
 
     assert result["can_answer"] is False
@@ -180,6 +187,7 @@ async def test_ask_endpoint_returns_502_when_generated_sql_is_rejected():
                 dataset_id=1,
                 request=make_analytics_request(),
                 db=db,
+                current_user=TEST_USER,
             )
 
     assert exc_info.value.status_code == 502
@@ -218,21 +226,22 @@ async def test_ask_endpoint_returns_results_from_query_service():
             "explanation": "Calculates revenue by region.",
         },
     ), patch(
-            "app.routers.datasets.execute_dataset_query",
-            return_value=query_results,
-        ) as mock_execute, patch(
-            "app.routers.datasets.generate_business_insights",
-            new_callable=AsyncMock,
-            return_value={
-                "insights": [
-                    "North generated 500 in revenue."
-                ]
-            },
-        ) as mock_insights:
+        "app.routers.datasets.execute_dataset_query",
+        return_value=query_results,
+    ) as mock_execute, patch(
+        "app.routers.datasets.generate_business_insights",
+        new_callable=AsyncMock,
+        return_value={
+            "insights": [
+                "North generated 500 in revenue."
+            ]
+        },
+    ) as mock_insights:
         result = await ask_dataset_question(
             dataset_id=1,
             request=make_analytics_request(),
             db=db,
+            current_user=TEST_USER,
         )
 
     assert result["can_answer"] is True
@@ -252,6 +261,7 @@ async def test_ask_endpoint_returns_results_from_query_service():
     ]
 
     mock_insights.assert_awaited_once()
+
 
 @pytest.mark.asyncio
 async def test_ask_endpoint_preserves_results_when_insight_generation_fails():
@@ -300,11 +310,13 @@ async def test_ask_endpoint_preserves_results_when_insight_generation_fails():
             dataset_id=1,
             request=make_analytics_request(),
             db=db,
+            current_user=TEST_USER,
         )
 
     assert result["can_answer"] is True
     assert result["results"] == query_results
     assert result["insights"] == []
+
 
 @pytest.mark.asyncio
 async def test_ask_endpoint_skips_insight_generation_for_empty_results():
@@ -350,12 +362,14 @@ async def test_ask_endpoint_skips_insight_generation_for_empty_results():
             dataset_id=1,
             request=make_analytics_request(),
             db=db,
+            current_user=TEST_USER,
         )
 
     assert result["results"] == query_results
     assert result["insights"] == []
 
     mock_insights.assert_not_awaited()
+
 
 @pytest.mark.asyncio
 async def test_ask_endpoint_persists_successful_query_history():
@@ -399,6 +413,7 @@ async def test_ask_endpoint_persists_successful_query_history():
             dataset_id=1,
             request=make_analytics_request(),
             db=db,
+            current_user=TEST_USER,
         )
 
     history = db.add.call_args.args[0]
@@ -414,9 +429,8 @@ async def test_ask_endpoint_persists_successful_query_history():
     assert history.insights == []
     assert history.error_message is None
 
-    # One commit creates the pending record.
-    # Another commits the final outcome.
     assert db.commit.call_count == 2
+
 
 @pytest.mark.asyncio
 async def test_ask_endpoint_persists_unanswerable_question():
@@ -450,6 +464,7 @@ async def test_ask_endpoint_persists_unanswerable_question():
             dataset_id=1,
             request=make_analytics_request(),
             db=db,
+            current_user=TEST_USER,
         )
 
     history = db.add.call_args.args[0]
@@ -462,6 +477,7 @@ async def test_ask_endpoint_persists_unanswerable_question():
     assert history.generated_sql is None
 
     mock_execute.assert_not_called()
+
 
 @pytest.mark.asyncio
 async def test_ask_endpoint_continues_when_history_creation_fails():
@@ -506,6 +522,7 @@ async def test_ask_endpoint_continues_when_history_creation_fails():
             dataset_id=1,
             request=make_analytics_request(),
             db=db,
+            current_user=TEST_USER,
         )
 
     assert result["can_answer"] is True
@@ -513,6 +530,7 @@ async def test_ask_endpoint_continues_when_history_creation_fails():
 
     mock_execute.assert_called_once()
     db.rollback.assert_called()
+
 
 @pytest.mark.asyncio
 async def test_ask_endpoint_preserves_results_when_history_finalization_fails():
@@ -527,8 +545,6 @@ async def test_ask_endpoint_preserves_results_when_history_finalization_fails():
         "row_count": 0,
     }
 
-    # The first commit creates the pending history record.
-    # The second commit fails while updating its final status.
     db.commit.side_effect = [
         None,
         RuntimeError("History finalization failed"),
@@ -560,6 +576,7 @@ async def test_ask_endpoint_preserves_results_when_history_finalization_fails():
             dataset_id=1,
             request=make_analytics_request(),
             db=db,
+            current_user=TEST_USER,
         )
 
     assert result["can_answer"] is True

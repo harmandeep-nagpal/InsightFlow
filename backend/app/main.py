@@ -16,8 +16,6 @@ app = FastAPI(
 app.include_router(datasets_router)
 app.include_router(history_router)
 app.include_router(auth_router)
-app.include_router(datasets_router)
-app.include_router(history_router)
 @app.get("/health")
 def health_check():
     return {

@@ -1,8 +1,7 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column
-
+from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String
 from app.database.base import Base
 
 
@@ -12,7 +11,12 @@ class Dataset(Base):
     id: Mapped[int] = mapped_column(
         Integer, primary_key=True, autoincrement=True
     )
-
+    owner_id: Mapped[int] = mapped_column(
+    Integer,
+    ForeignKey("users.id", ondelete="RESTRICT"),
+    nullable=False,
+    index=True,
+)
     name: Mapped[str] = mapped_column(
         String(255), nullable=False
     )

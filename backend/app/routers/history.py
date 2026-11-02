@@ -4,7 +4,9 @@ from sqlalchemy.orm import Session
 from app.database.dependencies import get_db
 from app.models.dataset import Dataset
 from app.models.query_history import QueryHistory
+from app.models.user import User
 from app.schemas.history import QueryHistoryResponse
+from app.services.auth_service import get_current_user
 
 
 router = APIRouter(
@@ -22,11 +24,15 @@ def get_dataset_query_history(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    # Verify that the requested dataset exists.
+    # Only the owner can confirm that this dataset exists.
     dataset = (
         db.query(Dataset)
-        .filter(Dataset.id == dataset_id)
+        .filter(
+            Dataset.id == dataset_id,
+            Dataset.owner_id == current_user.id,
+        )
         .first()
     )
 
@@ -36,7 +42,7 @@ def get_dataset_query_history(
             detail="Dataset not found.",
         )
 
-    # Return the most recent queries first.
+    # Return only history belonging to the authorized dataset.
     history = (
         db.query(QueryHistory)
         .filter(QueryHistory.dataset_id == dataset_id)

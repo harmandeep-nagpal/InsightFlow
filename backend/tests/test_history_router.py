@@ -1,4 +1,5 @@
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -9,19 +10,23 @@ from app.models.query_history import QueryHistory
 from app.routers.history import get_dataset_query_history
 
 
-def make_dataset():
+TEST_USER = SimpleNamespace(id=1)
+
+
+def make_dataset(owner_id=1):
     dataset = MagicMock(spec=Dataset)
     dataset.id = 1
+    dataset.owner_id = owner_id
     return dataset
 
 
 def make_db(dataset, history=None):
     db = MagicMock()
 
-    db.query.return_value.filter.return_value.first.return_value = (
-        dataset
-    )
+    # First query: dataset ownership lookup.
+    db.query.return_value.filter.return_value.first.return_value = dataset
 
+    # Second query: history lookup and pagination.
     db.query.return_value.filter.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = (
         history or []
     )
@@ -38,6 +43,25 @@ def test_history_returns_404_for_missing_dataset():
             limit=20,
             offset=0,
             db=db,
+            current_user=TEST_USER,
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Dataset not found."
+
+
+def test_history_returns_404_when_dataset_belongs_to_another_user():
+    # The owner-filtered database lookup returns no dataset for this user.
+    db = make_db(None)
+    another_user = SimpleNamespace(id=2)
+
+    with pytest.raises(HTTPException) as exc_info:
+        get_dataset_query_history(
+            dataset_id=1,
+            limit=20,
+            offset=0,
+            db=db,
+            current_user=another_user,
         )
 
     assert exc_info.value.status_code == 404
@@ -45,20 +69,21 @@ def test_history_returns_404_for_missing_dataset():
 
 
 def test_history_returns_empty_list_when_no_queries_exist():
-    db = make_db(make_dataset())
+    db = make_db(make_dataset(owner_id=TEST_USER.id))
 
     result = get_dataset_query_history(
         dataset_id=1,
         limit=20,
         offset=0,
         db=db,
+        current_user=TEST_USER,
     )
 
     assert result == []
 
 
 def test_history_filters_and_paginates_by_dataset():
-    dataset = make_dataset()
+    dataset = make_dataset(owner_id=TEST_USER.id)
 
     record = MagicMock(spec=QueryHistory)
     record.id = 5
@@ -78,15 +103,14 @@ def test_history_filters_and_paginates_by_dataset():
         limit=10,
         offset=5,
         db=db,
+        current_user=TEST_USER,
     )
 
     assert result == [record]
-
-    db.query.return_value.filter.assert_called()
+    assert db.query.return_value.filter.call_count == 2
     db.query.return_value.filter.return_value.order_by.return_value.offset.assert_called_once_with(
         5
     )
-
     db.query.return_value.filter.return_value.order_by.return_value.offset.return_value.limit.assert_called_once_with(
         10
     )

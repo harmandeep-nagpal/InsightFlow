@@ -4,6 +4,8 @@ import pandas as pd
 from app.schemas.analytics import AnalyticsQuestionRequest
 from app.models.query_history import QueryHistory
 from app.services.context_builder import build_dataset_context
+from app.models.user import User
+from app.services.auth_service import get_current_user
 
 from app.services.prompt_service import (
     build_sql_generation_messages,
@@ -131,6 +133,7 @@ router = APIRouter(
 async def upload_dataset(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     if not file.filename.endswith(".csv"):
         raise HTTPException(
@@ -150,6 +153,7 @@ async def upload_dataset(
 
         # 4. Create dataset metadata record
         dataset = Dataset(
+            owner_id=current_user.id,
             name=file.filename.rsplit(".", 1)[0],
             filename=file.filename,
             row_count=metadata["row_count"],
@@ -223,6 +227,7 @@ def preview_dataset(
     dataset_id: int,
     limit: int = 10,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     # Prevent unreasonable requests
     if limit < 1 or limit > 100:
@@ -233,10 +238,13 @@ def preview_dataset(
 
     # Find dataset metadata
     dataset = (
-        db.query(Dataset)
-        .filter(Dataset.id == dataset_id)
-        .first()
-    )
+            db.query(Dataset)
+            .filter(
+                Dataset.id == dataset_id,
+                Dataset.owner_id == current_user.id,
+            )
+            .first()
+        )
 
     if not dataset:
         raise HTTPException(
@@ -294,12 +302,16 @@ def query_dataset(
     dataset_id: int,
     request: QueryRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     dataset = (
-        db.query(Dataset)
-        .filter(Dataset.id == dataset_id)
-        .first()
-    )
+            db.query(Dataset)
+            .filter(
+                Dataset.id == dataset_id,
+                Dataset.owner_id == current_user.id,
+            )
+            .first()
+        )
 
     if not dataset:
         raise HTTPException(
@@ -337,13 +349,17 @@ def query_dataset(
 def get_dataset_schema(
     dataset_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     # 1. Retrieve dataset metadata.
     dataset = (
-        db.query(Dataset)
-        .filter(Dataset.id == dataset_id)
-        .first()
-    )
+            db.query(Dataset)
+            .filter(
+                Dataset.id == dataset_id,
+                Dataset.owner_id == current_user.id,
+            )
+            .first()
+        )
 
     if not dataset:
         raise HTTPException(
@@ -443,13 +459,17 @@ def get_dataset_schema(
 def get_dataset_profile(
     dataset_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     # 1. Find the dataset metadata.
     dataset = (
-        db.query(Dataset)
-        .filter(Dataset.id == dataset_id)
-        .first()
-    )
+            db.query(Dataset)
+            .filter(
+                Dataset.id == dataset_id,
+                Dataset.owner_id == current_user.id,
+            )
+            .first()
+        )
 
     if not dataset:
         raise HTTPException(
@@ -481,13 +501,17 @@ async def ask_dataset_question(
     dataset_id: int,
     request: AnalyticsQuestionRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     # 1. Retrieve the selected dataset.
     dataset = (
-        db.query(Dataset)
-        .filter(Dataset.id == dataset_id)
-        .first()
+    db.query(Dataset)
+    .filter(
+        Dataset.id == dataset_id,
+        Dataset.owner_id == current_user.id,
     )
+    .first()
+)
 
     if not dataset:
         raise HTTPException(
